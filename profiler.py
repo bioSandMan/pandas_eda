@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
+import re
+from ast import literal_eval
 import pandas as pd
 import numpy as np
-import re
 from sklearn import preprocessing
+from gensim.parsing import preprocessing as gpp
 from external_tools import CombineColumns
-import gensim.parsing.preprocessing as gpp
-
 
 class DataReader(object):
-
+    """
+    A class to read in data to a pandas dataframe
+    """
     def __init__(self,
                  file_path=None,
                  combine_cols=None,
@@ -25,16 +27,17 @@ class DataReader(object):
         self.stop_words = stop_words
         self.minsize = minsize
         self.date_cols = date_cols
+        self.df = None
 
     def combine_columns(self):
         '''
         Combines the contents of "combine_cols" into one column, "out_col"
         '''
-        cc = CombineColumns(columns=[self._normalize_columns(
+        cc = CombineColumns(columns=[self._normalize_column_names(
             i) for i in self.combine_cols], name=self.out_col)
         self.df = cc.fit_transform(self.df)
 
-    def normalize_columns(self):
+    def normalize_column_names(self):
         '''
         Normalizes column names to fit the format of "column_name".
         '''
@@ -44,9 +47,9 @@ class DataReader(object):
                 self.df.drop(i, axis=1, inplace=True)
 
         self.df.rename(
-            columns=lambda x: self._normalize_columns(x), inplace=True)
+            columns=lambda x: self._normalize_column_names(x), inplace=True)
 
-    def _normalize_columns(self, col):
+    def _normalize_column_names(self, col):
         text = re.sub(r'(^[_])', r'', col)
         text = re.sub(r'(^[ ])', r'', text)
         text = re.sub(r'(^[0-9])', r'c/\1', text)
@@ -121,7 +124,7 @@ class DataReader(object):
 class DataProfiler(DataReader):
     '''
     Profiler is used to get a better view of the data
-    Inherits from GetPatentData
+    Inherits from DataReader
     Returns a dataframe of useful information
     Requires pandas
 
@@ -157,9 +160,11 @@ class DataProfiler(DataReader):
                  min_cardinality=100,
                  max_factor_threshold=200,
                  max_numeric_threshold=50,
-                 manual_overrides=list(),
+                 manual_overrides=None,
                  **kwargs):
-
+        
+        if manual_overrides is None:
+            manual_overrides = []
         if isinstance(df, pd.DataFrame):
             self.df = df
 
@@ -210,7 +215,10 @@ class DataProfiler(DataReader):
                         proposition = "Make datetime"
                     elif (self._is_categorical(i)):
                         summary = "Categorical"
-                        proposition = "Label Encode"
+                        if unique_values > 20:
+                            proposition = "Label Encode"
+                        else:
+                            proposition = "One Hot Encode"
                     if missing_values == nr:
                         summary = "Empty column"
                         proposition = "Remove"
@@ -251,11 +259,7 @@ class DataProfiler(DataReader):
         '''
         temp_vector = vec.isnull().astype(int).groupby(
             vec.notnull().astype(int).cumsum()).sum()
-        for i in temp_vector.values:
-            if i >= 5:
-                return True
-            else:
-                return False
+        return bool(any(temp_vector >= 5))
 
     def _is_categorical(self, column):
         '''
@@ -274,11 +278,10 @@ class DataProfiler(DataReader):
         otherwise.
         '''
         ratio = self.df[column].nunique()/self.df.shape[0]
-        if ratio > 0.001 and (self.df[column].dtype.name == 'object'
-                              or self.df[column].dtype.name == 'category'):
+        if ratio > 0.001 and (self.df[column].select_dtypes(include=["object","category"])):
             return True
-        else:
-            return False
+        
+        return False
 
     def _is_numeric(self, column):
         '''
@@ -320,7 +323,7 @@ class DataProfiler(DataReader):
         col : a string of a column name, or a list of many columns names or
                 None (default). 
         '''
-        if type(col) is str:
+        if isinstance(col, str):
             col = [col]
         self.df.drop(col, axis=1, inplace=True)
 
@@ -357,13 +360,13 @@ class DataProfiler(DataReader):
         **kwargs: additional arguments to be passed to panda's apply
         '''
 
-        func = eval(func_str)
+        func = literal_eval(func_str)
         if func.__name__ != '<lambda>' \
                 and func.__module__ != 'sklearn.preprocessing.data':
             raise TypeError('func is not recognized')
         if col is None:
             print("Please specify a column name or list of columns")
-        elif type(col) is str:
+        elif isinstance(col, str):
             col = [col]
 
         if new_col_name is None:  # inplace
@@ -461,7 +464,7 @@ class DataProfiler(DataReader):
 
         if col is None:
             print("Please specify a column name or list of columns")
-        elif type(col) is str:
+        elif isinstance(col, str):
             col = [col]
 
         for x in col:
