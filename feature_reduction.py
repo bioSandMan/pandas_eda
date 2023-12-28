@@ -1,6 +1,6 @@
 
 from sklearn.feature_selection import RFECV
-from ips_model_profiler.src.xgbclassifer import xgb_classifier
+from import xgb_classifier
 
 
 def recursive_feature_elimination(model, df, X, Y, min_features):
