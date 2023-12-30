@@ -5,12 +5,14 @@ import pandas as pd
 import numpy as np
 from sklearn import preprocessing
 from gensim.parsing import preprocessing as gpp
-from external_tools import CombineColumns
+from pandas_eda.external_tools import CombineColumns
+
 
 class DataReader(object):
     """
     A class to read in data to a pandas dataframe
     """
+
     def __init__(self,
                  file_path=None,
                  combine_cols=None,
@@ -92,7 +94,7 @@ class DataReader(object):
         '''
         if isinstance(self.file_path, str):
             if self.file_path.endswith('.pkl.bz2') \
-                 or self.file_path.endswith('.pkl'):
+                    or self.file_path.endswith('.pkl'):
                 self.df = pd.read_pickle(self.file_path)
             elif self.file_path.endswith('.csv'):
                 self.df = pd.read_csv(self.file_path,
@@ -101,7 +103,8 @@ class DataReader(object):
                                       encoding="utf-8",
                                       parse_dates=self.date_cols,
                                       infer_datetime_format=True,
-                                      float_precision=None)
+                                      float_precision=None,
+                                      low_memory=False)
 
             elif self.file_path.endswith(('.xls', '.xlsm', '.xlsx')):
                 self.df = pd.read_excel(self.file_path)
@@ -144,33 +147,26 @@ class DataProfiler(DataReader):
     Parameters
     __________
     max_first_to_rest_ratio = 97/3,        # max threshold of the frequency of the top value as compared to the rest of the values (e.g. 97% vs 3%)
-    max_first_to_rest_ratio_wO = 95/5,     # max threshold of the frequency of the top value as compared to the rest of the values, after replacing less frequent with Other
-    max_unique_ratio = 1e-3,               # max threshold of the ratio of unique values over total number of values
-    min_cardinality = 100L,                # min threshold of occurrence of a value to be considered as a factor, otherwise it will be considered Other              
-    max_factor_threshold = 200L,           # max number of distinct levels that a factor can have; more is considered a string / ID etc.
-    max_numeric_threshold = 50L,           # max number of distinct levels that a numeric factor can have; more is simply considered a numeric
     manual_overrides = list()              # optional list of comments and actions that can be manually provided to override the automatic propositions of the data profiler):
     '''
 
     def __init__(self,
                  df=None,
-                 max_first_to_rest_ratio=97/3,
-                 max_first_to_rest_ratio_wO=95/5,
-                 max_unique_ratio=1e-3,
-                 min_cardinality=100,
-                 max_factor_threshold=200,
-                 max_numeric_threshold=50,
+                 max_first_to_rest_ratio=95,
                  manual_overrides=None,
                  **kwargs):
-        
+        super().__init__()
+        self.max_first_to_rest_ratio = max_first_to_rest_ratio
+
         if manual_overrides is None:
             manual_overrides = []
+
         if isinstance(df, pd.DataFrame):
             self.df = df
 
         self.manual_overrides = manual_overrides
-        self.profile = None
-        super(DataProfiler, self).__init__()
+        self.profile = pd.DataFrame()
+        
 
     def get_profile(self):
         '''
@@ -183,10 +179,14 @@ class DataProfiler(DataReader):
         '''
         # always reset when run
         self.profile = pd.DataFrame()
+
         try:
             nr = self.df.shape[0]
             for i in self.df.columns.tolist():
                 if i not in self.manual_overrides:
+                    if "Unnamed" in i:
+                        self.df.drop(i, inplace=True, axis=1)
+                        continue
                     vector = self.df[i]
 
                     # original data type(s) of the vector
@@ -200,13 +200,15 @@ class DataProfiler(DataReader):
                     missing_values = vector.isnull().sum()
 
                     # get a sample of the data
-                    if self._batmaNaN(vector):
-                        sample_data = ['nan', 'nan', '...', 'Batman!']
+                    sample_data = f"{list(vector[0:3])}"
+                    counts = vector.value_counts(normalize=True, dropna=False)*100
+                    most_frequent_value = str(list(counts.items())[0])
+                    if (counts >= self.max_first_to_rest_ratio).any():
+                        summary = "Low variance feature"
+                        proposition = "Consider Dropping"
                     else:
-                        sample_data = vector[0:5].tolist()
-
-                    summary = ""
-                    proposition = ""
+                        summary = ""
+                        proposition = ""
 
                     # Logic to deduce necessary pre-processing
                     # Assumes first entry is not empty
@@ -222,26 +224,28 @@ class DataProfiler(DataReader):
                     if missing_values == nr:
                         summary = "Empty column"
                         proposition = "Remove"
-                    self.profile = self.profile.append(
-                                {"Column Name": i,
-                                 "Number of Rows": nr,
-                                 "Source Data Type": data_type_at_source,
-                                 "Unique Values": unique_values,
-                                 "Ratio of Unique Values": unique_values/nr,
-                                 "Missing Values": missing_values,
-                                 "Ratio of missing values": missing_values/nr,
-                                 "Completeness": (1-(missing_values/nr)),
-                                 "Summary": summary,
-                                 "Sample data": sample_data,
-                                 "Proposition": proposition},
-                                ignore_index=True)
+                    temp_df = pd.DataFrame(
+                        {"Column Name": i,
+                         "Number of Rows": nr,
+                         "Source Data Type": data_type_at_source,
+                         "Unique Values": unique_values,
+                         "Ratio of Unique Values": unique_values/nr,
+                         "Missing Values": missing_values,
+                         "Ratio of missing values": missing_values/nr,
+                         "Completeness": (1-(missing_values/nr)),
+                         "Most Frequent Value": most_frequent_value,
+                         "Summary": summary,
+                         "Sample data": f"{sample_data}",
+                         "Proposition": proposition}, index=[0])
+                    self.profile = pd.concat([self.profile, temp_df],
+                        ignore_index=True)
 
         except Exception as e:
             print(e)
             print("Could not profile the dataframe")
             pass
 
-        return self.profile
+        return self.profile.reset_index(drop=True)
 
     def _batmaNaN(self, vec):
         '''
@@ -278,9 +282,10 @@ class DataProfiler(DataReader):
         otherwise.
         '''
         ratio = self.df[column].nunique()/self.df.shape[0]
-        if ratio > 0.001 and (self.df[column].select_dtypes(include=["object","category"])):
+        if ratio > 0.001 and (self.df[column].dtype.name == 'object'
+                              or self.df[column].dtype.name == 'category'):
             return True
-        
+
         return False
 
     def _is_numeric(self, column):

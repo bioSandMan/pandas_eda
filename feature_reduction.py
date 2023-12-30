@@ -1,9 +1,11 @@
 
 from sklearn.feature_selection import RFECV
-from xgbclassifier import xgb_classifier
 import pandas as pd
 import numpy as np
-
+import numpy as np
+import pandas as pd
+from sklearn.feature_selection import VarianceThreshold
+from statsmodels.stats.outliers_influence import variance_inflation_factor    
 
 class MultiCollinearity:
     """
@@ -284,6 +286,121 @@ class MultiCollinearity:
         # return the reduced dataframe
         return pd.concat([self.X, self.y], axis=1)
 
+
+def calculate_vif_(X, thresh=5.0):
+    X = X.assign(const=1)  # faster than add_constant from statsmodels
+    variables = list(range(X.shape[1]))
+    dropped = True
+    while dropped:
+        dropped = False
+        vif = [variance_inflation_factor(X.iloc[:, variables].values, ix)
+               for ix in range(X.iloc[:, variables].shape[1])]
+        vif = vif[:-1]  # don't let the constant be removed in the loop.
+        maxloc = vif.index(max(vif))
+        if max(vif) > thresh:
+            print('dropping \'' + X.iloc[:, variables].columns[maxloc] +
+                  '\' at index: ' + str(maxloc))
+            del variables[maxloc]
+            dropped = True
+
+    print('Remaining variables:')
+    print(X.columns[variables[:-1]])
+    return X.iloc[:, variables[:-1]]
+
+def get_low_variance_columns(dframe=None,
+                             skip_columns=[],
+                             thresh=0.16,
+                             autoremove=False):
+    """
+    Wrapper for sklearn VarianceThreshold for use on pandas dataframes.
+    """
+    print("Finding low-variance features.")
+    try:
+        # get list of all the original df columns
+        all_columns = dframe.columns
+
+        # remove `skip_columns`
+        remaining_columns = all_columns.drop(skip_columns)
+
+        # get length of new index
+        max_index = len(remaining_columns) - 1
+
+        # get indices for `skip_columns`
+        skipped_idx = [all_columns.get_loc(column)
+                       for column
+                       in skip_columns]
+
+        # adjust insert location by the number of columns removed
+        # (for non-zero insertion locations) to keep relative
+        # locations intact
+        for idx, item in enumerate(skipped_idx):
+            if item > max_index:
+                diff = item - max_index
+                skipped_idx[idx] -= diff
+            if item == max_index:
+                diff = item - len(skip_columns)
+                skipped_idx[idx] -= diff
+            if idx == 0:
+                skipped_idx[idx] = item
+
+        # get values of `skip_columns`
+        skipped_values = dframe.iloc[:, skipped_idx].values
+
+        # get dataframe values
+        X = dframe.loc[:, remaining_columns].values
+
+        # instantiate VarianceThreshold object
+        vt = VarianceThreshold(threshold=thresh)
+
+        # fit vt to data
+        vt.fit(X)
+
+        # get the indices of the features that are being kept
+        feature_indices = vt.get_support(indices=True)
+
+        # remove low-variance columns from index
+        feature_names = [remaining_columns[idx]
+                         for idx, _
+                         in enumerate(remaining_columns)
+                         if idx
+                         in feature_indices]
+
+        # get the columns to be removed
+        removed_features = list(np.setdiff1d(remaining_columns,
+                                             feature_names))
+        print("Found {0} low-variance columns."
+              .format(len(removed_features)))
+
+        # remove the columns
+        if autoremove:
+            print("Removing low-variance features.")
+            # remove the low-variance columns
+            X_removed = vt.transform(X)
+
+            print("Reassembling the dataframe (with low-variance "
+                  "features removed).")
+            # re-assemble the dataframe
+            dframe = pd.DataFrame(data=X_removed,
+                                  columns=feature_names)
+
+            # add back the `skip_columns`
+            for idx, index in enumerate(skipped_idx):
+                dframe.insert(loc=index,
+                              column=skip_columns[idx],
+                              value=skipped_values[:, idx])
+            print("Succesfully removed low-variance columns.")
+
+        # do not remove columns
+        else:
+            print("No changes have been made to the dataframe.")
+
+    except Exception as e:
+        print(e)
+        print("Could not remove low-variance features. Something "
+              "went wrong.")
+        pass
+
+    return dframe, removed_features
 
 def recursive_feature_elimination(model, X, Y, min_features):
     rfecv = RFECV(model,
